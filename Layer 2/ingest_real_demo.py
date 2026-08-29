@@ -1,10 +1,12 @@
-import pandas as pd
+import os
 from datetime import datetime
+import pandas as pd
 import h3_utils
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # File Names
-CSV_FILE = "ennore_ais_2017_massive.csv"
-OUTPUT_FILE = "real_ennore_data.sql"
+CSV_FILE = os.path.join(BASE_DIR, "ennore_ais_2017_massive.csv")
+OUTPUT_FILE = os.path.join(BASE_DIR, "real_ennore_data.sql")
 
 # ==========================================
 # ⚠️ APNI CSV KE HISAAB SE COLUMN NAMES SET KARO

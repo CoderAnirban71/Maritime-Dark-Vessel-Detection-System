@@ -1,18 +1,39 @@
-import xarray as xr
+import glob
+import os
+import h3_utils
 import numpy as np
 import pandas as pd
-import glob
-import h3_utils
+import xarray as xr
 
-OUTPUT_FILE = "real_ennore_ocean.sql"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_FILE = os.path.join(BASE_DIR, "real_ennore_ocean.sql")
 
 def sql_ts(ts_string):
     return pd.to_datetime(ts_string).strftime("%Y-%m-%d %H:%M:%S+0000")
 
+DEFAULT_OCEAN_FILE = os.path.join(BASE_DIR, "cmems_mod_glo_phy_my_0.083deg_P1D-m_1787602924183.nc")
+
+
+def find_ocean_nc_file() -> str | None:
+    if os.path.exists(DEFAULT_OCEAN_FILE):
+        return DEFAULT_OCEAN_FILE
+    nc_files = glob.glob(os.path.join(BASE_DIR, "*.nc"))
+    for f in nc_files:
+        try:
+            with xr.open_dataset(f) as ds:
+                if "uo" in ds.data_vars and "vo" in ds.data_vars:
+                    return f
+        except Exception:
+            continue
+    return nc_files[0] if nc_files else None
+
+
 def generate_ocean_sql():
-    # Folder ki pehli .nc file automatically utha lega
-    nc_file = glob.glob("*.nc")[0]
-    print(f"Reading {nc_file}...")
+    nc_file = find_ocean_nc_file()
+    if not nc_file:
+        print(f"ERROR: No ocean current .nc files found in {BASE_DIR}")
+        return
+    print(f"Reading ocean current data from {nc_file}...")
     
     # NetCDF file load karna
     ds = xr.open_dataset(nc_file)
@@ -50,8 +71,9 @@ def generate_ocean_sql():
         
         lines.append(
             "INSERT INTO ocean_readings (lat, lon, current_speed_ms, current_dir_deg, h3_index, ts) "
-            f"VALUES (ROUND({lat}, 5), ROUND({lon}, 5), ROUND({speed}, 3), ROUND({direction}, 1), {h3idx}, "
-            f"'{sql_ts(ts_val)}') ON CONFLICT (h3_index, ts) DO NOTHING;"
+            f"VALUES ({round(lat, 5)}, {round(lon, 5)}, {round(speed, 3)}, {round(direction, 1)}, {h3idx}, "
+            f"'{sql_ts(ts_val)}') ON CONFLICT (h3_index, ts) DO UPDATE SET "
+            f"current_speed_ms = EXCLUDED.current_speed_ms, current_dir_deg = EXCLUDED.current_dir_deg;"
         )
         success_count += 1
 

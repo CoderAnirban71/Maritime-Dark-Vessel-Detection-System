@@ -17,12 +17,14 @@ caught before you ever saw this code.
 | `config.py` | Settings, loaded from `.env`. Nothing else is imported here. |
 | `schema.sql` | Table + hypertable + index definitions. Run once, manually. |
 | `db.py` | Shared asyncpg connection pool. |
-| `models.py` | Pydantic validation for every incoming message. |
+| `models.py` | Pydantic validation for every incoming message (AIS, Spills, Ocean, Wind). |
 | `h3_utils.py` | All H3 encoding logic (point, polygon, radius search). Pure functions, no DB/Redis. |
-| `repository.py` | The only file that writes SQL. Batch inserts (idempotent), hex+time queries, the spill-to-vessel join. |
-| `fake_data_generator.py` | Publishes realistic synthetic messages to Redis, standing in for Layer 1 until it's ready. |
+| `repository.py` | The only file that writes SQL. Batch inserts (idempotent/upsert), hex+time queries, the spill-to-vessel join. |
+| `fake_data_generator.py` | Publishes realistic synthetic messages (AIS, Ocean, Wind, Spills) to Redis. |
 | `ingest_consumer.py` | Long-running process: Redis → validate → encode → batch insert. |
-| `query_api.py` | FastAPI service Layer 5 calls: `/nearby`, `/spills/{id}/nearby-vessels`. |
+| `ingest_ocean_demo.py` | Parses real ocean current NetCDF files into SQL for TimescaleDB. |
+| `ingest_wind_demo.py` | Parses real wind NetCDF files (e.g. `7410704ea21710183b11f17c9bf25383.nc`) into SQL. |
+| `query_api.py` | FastAPI service Layer 5 and UI call: `/nearby`, `/environmental/nearby`, `/spills/{id}/nearby-vessels`. |
 | `test_pipeline.py` | Standalone smoke test - run any time to check the core logic still works. |
 
 ## Setup
@@ -61,9 +63,8 @@ cp .env.example .env
 
 The defaults in `.env.example` already match the Docker commands above, so
 if you used them as-is, you don't need to edit anything. **Before demo
-day, confirm `REDIS_CHANNEL_AIS` / `_SPILL` / `_OCEAN` with whoever owns
-Layer 1** - those three strings are the only real "contract" between your
-code and theirs, and they're currently placeholders on our side.
+day, confirm `REDIS_CHANNEL_AIS` / `_SPILL` / `_OCEAN` / `_WIND` with whoever owns
+Layer 1** - those strings are the contract between your code and theirs.
 
 ### 5. Apply the schema (once)
 
