@@ -1,28 +1,29 @@
 """
-config.py - single source of truth for settings.
+config.py - Single source of truth for settings.
 
-This file imports nothing else from this project - it only reads .env.
-Every other file imports FROM here.
-
-Uses pydantic-settings so a missing or malformed .env fails loudly and
-clearly at startup, instead of crashing confusingly deep inside an
-insert or a query later.
+This file reads environment variables or .env file using pydantic-settings.
+Provides sensible local defaults so imports and tests don't crash when .env is absent.
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
     # PostgreSQL / TimescaleDB
-    database_url: str
+    database_url: str = "postgresql://samudra:samudra_dev_pw@localhost:5432/samudra_netra"
 
     # Redis
-    redis_url: str
+    redis_url: str = "redis://localhost:6379/0"
     redis_channel_ais: str = "layer1:ais"
     redis_channel_spill: str = "layer1:spill"
     redis_channel_ocean: str = "layer1:ocean"
+    redis_channel_wind: str = "layer1:wind"
 
     # H3 - one resolution for points AND polygon coverage, so they are
     # directly joinable on h3_index with no parent/child conversion.

@@ -118,8 +118,17 @@ def make_ocean_reading() -> dict:
         # Real-world Arabian Sea surface current speeds are typically well under 2 m/s.
         "current_speed_ms": round(random.uniform(0.05, 1.8), 2),
         "current_dir_deg": round(random.uniform(0, 359.9), 1),
-        # Coastal wind speeds, calm to strong breeze.
-        "wind_speed_ms": round(random.uniform(0.5, 14.0), 1),
+        "ts": _now_iso(),
+    }
+
+
+def make_wind_reading() -> dict:
+    lat, lon = _random_point()
+    return {
+        "lat": lat,
+        "lon": lon,
+        # Coastal wind speeds, calm to strong breeze (m/s).
+        "wind_speed_ms": round(random.uniform(0.5, 18.0), 1),
         "wind_dir_deg": round(random.uniform(0, 359.9), 1),
         "ts": _now_iso(),
     }
@@ -127,7 +136,7 @@ def make_ocean_reading() -> dict:
 
 async def run(count: int, interval_seconds: float, spill_every: int) -> None:
     r = redis.from_url(settings.redis_url)
-    published = {"ais": 0, "spill": 0, "ocean": 0}
+    published = {"ais": 0, "spill": 0, "ocean": 0, "wind": 0}
     try:
         for i in range(1, count + 1):
             ais = make_ais_ping()
@@ -137,6 +146,10 @@ async def run(count: int, interval_seconds: float, spill_every: int) -> None:
             ocean = make_ocean_reading()
             await r.publish(settings.redis_channel_ocean, json.dumps(ocean))
             published["ocean"] += 1
+
+            wind = make_wind_reading()
+            await r.publish(settings.redis_channel_wind, json.dumps(wind))
+            published["wind"] += 1
 
             if i % spill_every == 0:
                 spill = make_spill_polygon()
@@ -157,7 +170,7 @@ async def run(count: int, interval_seconds: float, spill_every: int) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Publish realistic synthetic Layer 1 messages to Redis for testing.")
-    parser.add_argument("--count", type=int, default=20, help="number of AIS+ocean message pairs to publish")
+    parser.add_argument("--count", type=int, default=20, help="number of AIS+ocean+wind message sets to publish")
     parser.add_argument("--interval", type=float, default=0.0, help="seconds to sleep between messages (0 = burst)")
     parser.add_argument("--spill-every", type=int, default=5, help="publish one spill polygon every N iterations")
     args = parser.parse_args()

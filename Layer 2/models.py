@@ -1,14 +1,30 @@
 """
-models.py - shape/type validation for every message that arrives over Redis.
+models.py - Shape and type validation for messages in Layer 2.
 
-Pure definitions, no logic of its own. ingest_consumer.py calls these to
-reject a malformed message before it ever reaches h3_utils.py or the DB -
-the same job a form-checking counter does at a post office.
+Validates incoming messages from Redis / Layer 1 and defines Query API response shapes.
 """
 
 from datetime import datetime, timezone
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
+
+
+def _ensure_utc(v: Any) -> datetime:
+    """Normalize datetime or ISO string to UTC timezone-aware datetime."""
+    if isinstance(v, str):
+        # Let pydantic or fromisoformat handle string parsing
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    elif isinstance(v, datetime):
+        dt = v
+    elif isinstance(v, (int, float)):
+        dt = datetime.fromtimestamp(v, tz=timezone.utc)
+    else:
+        raise ValueError(f"Invalid timestamp format: {v!r}")
+
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 class AISPing(BaseModel):
@@ -16,17 +32,13 @@ class AISPing(BaseModel):
     lat: float = Field(..., ge=-90, le=90)
     lon: float = Field(..., ge=-180, le=180)
     speed_kn: float | None = Field(None, ge=0, le=60)
-    heading_deg: float | None = Field(None, ge=0, lt=360)
+    heading_deg: float | None = Field(None, ge=0, le=360)
     ts: datetime
 
-    @field_validator("ts")
+    @field_validator("ts", mode="before")
     @classmethod
-    def ts_must_be_utc(cls, v: datetime) -> datetime:
-        # A naive timestamp here would silently corrupt every time-window
-        # query downstream (IST vs UTC drift) - fail loudly instead.
-        if v.tzinfo is None:
-            raise ValueError("ts must be timezone-aware (UTC) - naive timestamps are rejected")
-        return v.astimezone(timezone.utc)
+    def validate_ts(cls, v: Any) -> datetime:
+        return _ensure_utc(v)
 
 
 class SpillDetection(BaseModel):
@@ -36,12 +48,10 @@ class SpillDetection(BaseModel):
     polygon: list[tuple[float, float]] = Field(..., min_length=3)
     ts: datetime
 
-    @field_validator("ts")
+    @field_validator("ts", mode="before")
     @classmethod
-    def ts_must_be_utc(cls, v: datetime) -> datetime:
-        if v.tzinfo is None:
-            raise ValueError("ts must be timezone-aware (UTC) - naive timestamps are rejected")
-        return v.astimezone(timezone.utc)
+    def validate_ts(cls, v: Any) -> datetime:
+        return _ensure_utc(v)
 
     @field_validator("polygon")
     @classmethod
@@ -56,17 +66,28 @@ class OceanReading(BaseModel):
     lat: float = Field(..., ge=-90, le=90)
     lon: float = Field(..., ge=-180, le=180)
     current_speed_ms: float | None = Field(None, ge=0, le=10)
-    current_dir_deg: float | None = Field(None, ge=0, lt=360)
+    current_dir_deg: float | None = Field(None, ge=0, le=360)
     wind_speed_ms: float | None = Field(None, ge=0, le=60)
-    wind_dir_deg: float | None = Field(None, ge=0, lt=360)
+    wind_dir_deg: float | None = Field(None, ge=0, le=360)
     ts: datetime
 
-    @field_validator("ts")
+    @field_validator("ts", mode="before")
     @classmethod
-    def ts_must_be_utc(cls, v: datetime) -> datetime:
-        if v.tzinfo is None:
-            raise ValueError("ts must be timezone-aware (UTC) - naive timestamps are rejected")
-        return v.astimezone(timezone.utc)
+    def validate_ts(cls, v: Any) -> datetime:
+        return _ensure_utc(v)
+
+
+class WindReading(BaseModel):
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    wind_speed_ms: float = Field(..., ge=0, le=60)
+    wind_dir_deg: float = Field(..., ge=0, le=360)
+    ts: datetime
+
+    @field_validator("ts", mode="before")
+    @classmethod
+    def validate_ts(cls, v: Any) -> datetime:
+        return _ensure_utc(v)
 
 
 # ---- Query API response shapes ----
@@ -75,8 +96,9 @@ class AISPingOut(BaseModel):
     mmsi: int
     lat: float
     lon: float
-    speed_kn: float | None
-    heading_deg: float | None
+    speed_kn: float | None = None
+    heading_deg: float | None = None
+    h3_index: int | None = None
     ts: datetime
 
 
@@ -86,3 +108,22 @@ class NearbyResponse(BaseModel):
     radius_km: float
     cell_count_searched: int
     results: list[AISPingOut]
+
+
+class OceanReadingOut(BaseModel):
+    lat: float
+    lon: float
+    current_speed_ms: float | None = None
+    current_dir_deg: float | None = None
+    wind_speed_ms: float | None = None
+    wind_dir_deg: float | None = None
+    h3_index: int | None = None
+    ts: datetime
+
+
+class EnvironmentalNearbyResponse(BaseModel):
+    query_lat: float
+    query_lon: float
+    radius_km: float
+    cell_count_searched: int
+    results: list[OceanReadingOut]

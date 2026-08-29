@@ -17,6 +17,7 @@ Run this ONCE (or whenever you want to regenerate the demo set):
 Then everyone loads the result with:
     docker exec -i samudra_timescaledb psql -U samudra -d samudra_netra < sample_data.sql
 """
+import os
 import random
 from datetime import datetime, timedelta, timezone
 
@@ -24,7 +25,8 @@ import h3_utils
 
 random.seed(42)  # fixed seed -> same "random" data every time this runs
 
-OUTPUT_FILE = "sample_data.sql"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_FILE = os.path.join(BASE_DIR, "sample_data.sql")
 
 MID_PREFIXES = {
     419: "India",
