@@ -1,0 +1,31 @@
+[
+  {
+    "mmsi": "419001234",
+    "vessel_name": "MV Ocean Star",
+    "composite_score": 80.29,
+    "breakdown": {
+      "dead_reckoning_match_pct": 39.0,
+      "orientation_match_pct": 98.9,
+      "ais_dark_anomaly": true
+    },
+    "ghost_path_data": [
+      {
+        "gap_start": "2026-04-10T12:00:00",
+        "gap_end": "2026-04-10T16:00:00",
+        "last_lat": 22.35,
+        "last_lon": 68.95
+      }
+    ]
+  },
+  {
+    "mmsi": "419009876",
+    "vessel_name": "Tug Bravo",
+    "composite_score": 15.0,
+    "breakdown": {
+      "dead_reckoning_match_pct": 0.0,
+      "orientation_match_pct": 50.0,
+      "ais_dark_anomaly": false
+    },
+    "ghost_path_data": []
+  }
+]
