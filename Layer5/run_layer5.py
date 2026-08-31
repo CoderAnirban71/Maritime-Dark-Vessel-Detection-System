@@ -1,11 +1,11 @@
 """
 SAMUDRA-NETRA - Layer 5: Vessel Attribution Engine
 ====================================================
-Input  : layer4_output.json  (origin lat/lon/time from Layer 4 hindcast)
-         ais_pings table      (real AIS vessel data from Layer 2 DB)
-         spill_detections     (polygon for slick orientation from Layer 3)
+Input  : hindcast_results table  (origin lat/lon/time from Layer 4 hindcast)
+         ais_pings table         (real AIS vessel data from Layer 2 DB)
+         spill_detections        (polygon for slick orientation from Layer 3)
 
-Output : ranked_suspects_output.json  (scored + ranked vessel list)
+Output : vessel_attributions table  (scored + ranked vessel list)
 
 Scoring formula (plan Section 4, Layer 5):
     composite = DR_score(40%) + orientation_score(30%) + proximity_score(30%)
@@ -13,14 +13,14 @@ Scoring formula (plan Section 4, Layer 5):
 
 Run from the project root:
     python Layer5/run_layer5.py
-    python Layer5/run_layer5.py --layer4-output path/to/layer4_output.json
+    python Layer5/run_layer5.py --result-id <hindcast_results UUID>
 """
 
 import argparse
 import asyncio
 import json
 import math
-import os
+import uuid
 import asyncpg
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -34,10 +34,6 @@ import h3.api.basic_int as h3
 # ============================================================
 DATABASE_URL  = "postgresql://postgres:Data1234@localhost:5432/samudra_netra"
 H3_RESOLUTION = 8
-
-BASE_PROJECT  = r"C:\Users\anirb\Desktop\SIH Project\Maritime-Dark-Vessel-Detection-System"
-LAYER4_OUTPUT = os.path.join(BASE_PROJECT, "layer4_output.json")
-OUTPUT_FILE   = os.path.join(BASE_PROJECT, "Layer5", "ranked_suspects_output.json")
 
 # Search radius around origin point (km)
 AIS_SEARCH_RADIUS_KM = 50
@@ -69,18 +65,52 @@ class AISPing:
 
 
 # ============================================================
-# STEP 1: LOAD LAYER 4 OUTPUT
+# STEP 1: LOAD LAYER 4 OUTPUT (from hindcast_results table)
 # ============================================================
-def load_layer4_output(path: str) -> dict:
-    with open(path) as f:
-        data = json.load(f)
+async def _fetch_latest_hindcast_result(result_id=None):
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        if result_id:
+            row = await conn.fetchrow(
+                "SELECT result_id, spill_id, origin_lat, origin_lon, "
+                "origin_time_utc, search_end_utc, uncertainty_km "
+                "FROM hindcast_results WHERE result_id = $1",
+                uuid.UUID(result_id),
+            )
+        else:
+            row = await conn.fetchrow(
+                "SELECT result_id, spill_id, origin_lat, origin_lon, "
+                "origin_time_utc, search_end_utc, uncertainty_km "
+                "FROM hindcast_results ORDER BY created_at DESC LIMIT 1"
+            )
+    finally:
+        await conn.close()
+    if row is None:
+        raise RuntimeError("No hindcast result found in DB. Run layer4_hindcast_v2.py first.")
+    return row
 
-    required = ["estimated_origin_lat", "estimated_origin_lon",
-                "estimated_origin_time_utc", "search_window_end_utc"]
-    for key in required:
-        if key not in data:
-            raise KeyError(f"layer4_output.json is missing key: '{key}'")
-    return data
+
+def load_layer4_output(result_id: str = None) -> dict:
+    row = asyncio.run(_fetch_latest_hindcast_result(result_id))
+
+    origin_time = row["origin_time_utc"]
+    if origin_time.tzinfo is not None:
+        origin_time = origin_time.replace(tzinfo=None)
+    search_end = row["search_end_utc"]
+    if search_end.tzinfo is not None:
+        search_end = search_end.replace(tzinfo=None)
+
+    print(f"Loaded hindcast result {row['result_id']} from database "
+          f"(origin={row['origin_lat']:.5f},{row['origin_lon']:.5f})")
+
+    return {
+        "result_id":                 row["result_id"],
+        "estimated_origin_lat":      row["origin_lat"],
+        "estimated_origin_lon":      row["origin_lon"],
+        "estimated_origin_time_utc": origin_time.isoformat(),
+        "search_window_end_utc":     search_end.isoformat(),
+        "uncertainty_km":            row["uncertainty_km"],
+    }
 
 
 # ============================================================
@@ -295,24 +325,63 @@ def run_attribution_engine(origin: OriginEstimate,
 
 
 # ============================================================
+# STEP 6: SAVE RANKED SUSPECTS -> DB
+# ============================================================
+async def _insert_vessel_attributions(result_id, results):
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.executemany(
+            """
+            INSERT INTO vessel_attributions
+                (result_id, mmsi, vessel_name, last_known_lat, last_known_lon,
+                 last_known_time, composite_score, breakdown, ghost_path_data)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)
+            """,
+            [
+                (
+                    result_id,
+                    s["mmsi"],
+                    s["vessel_name"],
+                    s["last_known_lat"],
+                    s["last_known_lon"],
+                    datetime.fromisoformat(s["last_known_time"]),
+                    s["composite_score"],
+                    json.dumps(s["breakdown"]),
+                    json.dumps(s["ghost_path_data"]),
+                )
+                for s in results
+            ],
+        )
+    finally:
+        await conn.close()
+
+
+def save_attributions_to_db(result_id, results):
+    if not results:
+        print("No suspects to save (empty results).")
+        return
+    asyncio.run(_insert_vessel_attributions(result_id, results))
+    print(f"Saved {len(results)} vessel attribution(s) to database for result {result_id}")
+
+
+# ============================================================
 # MAIN
 # ============================================================
 def main():
     parser = argparse.ArgumentParser(
         description="SAMUDRA-NETRA Layer 5 - Vessel Attribution Engine")
-    parser.add_argument("--layer4-output", default=LAYER4_OUTPUT,
-                         help="Path to layer4_output.json")
-    parser.add_argument("--output", default=OUTPUT_FILE,
-                         help="Where to save ranked_suspects_output.json")
+    parser.add_argument("--result-id", default=None,
+                         help="Specific hindcast_results UUID from DB (default: latest)")
     args = parser.parse_args()
 
     print("=" * 60)
     print("  SAMUDRA-NETRA: Layer 5 Attribution Engine")
     print("=" * 60)
 
-    # Step 1: Load Layer 4 output
-    print(f"\n[1/4] Loading Layer 4 output from: {args.layer4_output}")
-    l4 = load_layer4_output(args.layer4_output)
+    # Step 1: Load Layer 4 output from DB
+    print(f"\n[1/4] Loading Layer 4 hindcast result from database...")
+    l4 = load_layer4_output(args.result_id)
+    result_id   = l4["result_id"]
     origin_lat  = l4["estimated_origin_lat"]
     origin_lon  = l4["estimated_origin_lon"]
     origin_time = datetime.fromisoformat(l4["estimated_origin_time_utc"])
@@ -345,10 +414,8 @@ def main():
         print("\n[4/4] Running attribution engine...")
         results = run_attribution_engine(origin, vessels)
 
-    # Save output
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    with open(args.output, "w") as f:
-        json.dump(results, f, indent=2)
+    # Save output to database
+    save_attributions_to_db(result_id, results)
 
     print("\n" + "=" * 60)
     print("  RESULTS")
@@ -363,7 +430,6 @@ def main():
     else:
         print("  No suspects ranked (no AIS data in DB near origin)")
 
-    print(f"\nSaved to: {args.output}")
     print("Done! Pass results to Layer 6 (frontend/report).")
 
 

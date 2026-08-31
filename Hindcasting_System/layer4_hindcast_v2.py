@@ -14,7 +14,7 @@ import uuid
 
 import numpy as np
 import asyncpg
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from opendrift.models.openoil import OpenOil
 from opendrift.readers import reader_constant
@@ -62,7 +62,43 @@ def load_spill_from_db(spill_id=None):
     mass_kg  = row["estimated_mass_kg"] or 1000
     print(f"Loaded spill {row['spill_id']} from database "
           f"(confidence={row['confidence']:.3f}, area_km2={row['area_km2']:.4f})")
-    return detection_time, polygon, oil_type, mass_kg
+    return detection_time, polygon, oil_type, mass_kg, row["spill_id"]
+
+
+# ============================================================
+# HINDCAST RESULT -> DB (replaces layer4_output.json handoff to Layer 5)
+# ============================================================
+async def _insert_hindcast_result(spill_id, origin_lat, origin_lon,
+                                   origin_time_utc, search_end_utc, uncertainty_km):
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO hindcast_results
+                (spill_id, origin_lat, origin_lon, origin_time_utc, search_end_utc, uncertainty_km)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING result_id
+            """,
+            spill_id, origin_lat, origin_lon, origin_time_utc, search_end_utc, uncertainty_km,
+        )
+    finally:
+        await conn.close()
+    return row["result_id"]
+
+
+def save_hindcast_result_to_db(spill_id, result):
+    origin_time = datetime.fromisoformat(result['estimated_origin_time']).replace(tzinfo=timezone.utc)
+    search_end  = datetime.fromisoformat(result['searched_back_from']).replace(tzinfo=timezone.utc)
+    result_id = asyncio.run(_insert_hindcast_result(
+        spill_id,
+        result['origin_point'][0],
+        result['origin_point'][1],
+        origin_time,
+        search_end,
+        result['uncertainty_km'],
+    ))
+    print(f"Saved hindcast result {result_id} to database (hands off to Layer 5)")
+    return result_id
 
 
 # ============================================================
@@ -278,8 +314,9 @@ def main():
     # --- Spill ---
     if args.input:
         detection_time, polygon, oil_type, mass_kg = load_spill_input(args.input)
+        spill_id = None
     else:
-        detection_time, polygon, oil_type, mass_kg = load_spill_from_db(args.spill_id)
+        detection_time, polygon, oil_type, mass_kg, spill_id = load_spill_from_db(args.spill_id)
     print(f"  detection_time={detection_time}, oil_type={oil_type}, vertices={len(polygon)}")
 
     # --- Environment ---
@@ -313,17 +350,8 @@ def main():
     o_fwd.plot(filename=fwd_plot, fast=True)
     print(f"Saved {os.path.basename(back_plot)} and {os.path.basename(fwd_plot)}")
 
-    output = {
-        'estimated_origin_lat':      result['origin_point'][0],
-        'estimated_origin_lon':      result['origin_point'][1],
-        'estimated_origin_time_utc': result['estimated_origin_time'],
-        'search_window_end_utc':     result['searched_back_from'],
-        'uncertainty_km':            result['uncertainty_km'],
-    }
-    output_path = os.path.join(BASE_DIR, 'layer4_output.json')
-    with open(output_path, 'w') as f:
-        json.dump(output, f, indent=2)
-    print(f"\nWrote {output_path} (hands off to Layer 5)")
+    print("\n=== Saving hindcast result to database ===")
+    save_hindcast_result_to_db(spill_id, result)
 
 
 if __name__ == '__main__':
