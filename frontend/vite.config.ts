@@ -1,7 +1,13 @@
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
-import { defineConfig } from 'vite'
-
+import { defineConfig } from "vitest/config";
+import react from "@vitejs/plugin-react";
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
-})
+  plugins: [react()],
+  server: { port: 5173 },
+  build: { sourcemap: true },
+  test: {
+    environment: "jsdom",
+    environmentOptions: { jsdom: { url: "http://localhost/" } },
+    setupFiles: ["./src/test/setup.ts"],
+    css: true,
+  },
+});
